@@ -5,6 +5,8 @@ import requests
 from bs4 import BeautifulSoup
 import time
 from io import StringIO
+import pytz
+import numpy as np
 
 headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
@@ -15,7 +17,7 @@ def get_sp500():
     res = requests.get(url, headers=headers)
 
     # Load all tables and find one with a Symbol column
-    tables = pd.read_html(res.text)
+    tables = pd.read_html(StringIO(res.text))
 
     symbol_col = None
     target_table = None
@@ -37,7 +39,7 @@ def get_sp500():
 def get_asx200():
     url = 'https://en.wikipedia.org/wiki/S%26P/ASX_200'
     res = requests.get(url, headers=headers)
-    return [f"{code}.AX" for code in pd.read_html(res.text)[0]['Code']]
+    return [f"{code}.AX" for code in pd.read_html(StringIO(res.text))[0]['Code']]
 
 def get_nifty50():
     url = 'https://en.wikipedia.org/wiki/NIFTY_50'
@@ -61,6 +63,8 @@ def get_nifty50():
 
     return [f"{code}.NS" for code in target_table[symbol_col]]
 
+def fix_yahoo_ticker(ticker):
+    return ticker.replace('.', '-')
 
 # === Step 1: Define Benchmark Universes ===
 benchmark_universes = {
@@ -70,11 +74,13 @@ benchmark_universes = {
 }
 
 # === Step 2: Define Time Windows ===
-today = datetime.today()
+nytz = pytz.timezone("America/New_York")
+now = datetime.now(nytz)
+
 windows = {
-    '1M': today - timedelta(days=21),
-    '3M': today - timedelta(days=63),
-    '6M': today - timedelta(days=126)
+    '1M': now - timedelta(days=21),
+    '3M': now - timedelta(days=63),
+    '6M': now - timedelta(days=126),
 }
 
 # === Step 3: Function to Get Returns ===
@@ -82,14 +88,54 @@ def get_returns(tickers):
     returns = []
     for ticker in tickers:
         try:
-            hist = yf.Ticker(ticker).history(period="6mo")
+            yf_ticker = fix_yahoo_ticker(ticker)
+            hist = yf.Ticker(yf_ticker).history(period="6mo")
             if len(hist) < 126:
                 continue
+            
+            if hist is None or hist.empty:
+                print(f"⚠️ Skipping {ticker}: no data (yf: {yf_ticker})")
+                continue
 
-            close_today = hist['Close'][-1]
-            close_1m = hist.loc[hist.index >= windows['1M']]['Close'].iloc[0]
-            close_3m = hist.loc[hist.index >= windows['3M']]['Close'].iloc[0]
-            close_6m = hist['Close'].iloc[0]
+            close_today = hist['Close'].iloc[-1]
+            #print("🧪 close_today :\n", close_today)
+            # 1M Close
+            close_1m_filtered = hist.loc[hist.index >= windows['1M']]['Close']
+            if pd.isna(close_1m_filtered):
+                print(f"⚠️ No 1M data for {ticker}")
+                continue
+            close_1m = close_1m_filtered.iloc[0]
+            #print("🧪 close_1M:", close_1m)
+
+            # 3M Close
+            close_3m_filtered = hist.loc[hist.index >= windows['3M']]['Close']
+            if pd.isna(close_3m_filtered):
+                print(f"⚠️ No 3M data for {ticker}")
+                continue
+            close_3m = close_3m_filtered.iloc[0]
+            #print("🧪 close_3M:", close_3m)
+
+            # 6M Close (entire history)
+            close_6m_filtered = hist['Close'].iloc[0]
+            if pd.isna(close_6m_filtered):
+                print(f"⚠️ No 6M data for {ticker}")
+                continue
+            close_6m = close_6m_filtered
+            #print("🧪 close_6M:", close_6m)
+
+            if pd.isna(close_today):
+                print(f"⚠️ NaN detected in return calc for {ticker} (missing Close today data)")
+                continue 
+            if pd.isna(close_1m):
+                print(f"⚠️ NaN detected in return calc for {ticker} (missing 1M data)")
+                continue
+            if pd.isna(close_3m):
+                print(f"⚠️ NaN detected in return calc for {ticker} (missing 3M data)")
+                continue
+            if pd.isna(close_6m):
+                print(f"⚠️ NaN detected in return calc for {ticker} (missing 6M data)")
+                continue            
+            
 
             r1m = (close_today - close_1m) / close_1m * 100
             r3m = (close_today - close_3m) / close_3m * 100
@@ -98,11 +144,15 @@ def get_returns(tickers):
             returns.append({
                 'Ticker': ticker,
                 'Price': round(close_today, 2),
-                'Return_1M_%': round(r1m, 2),
-                'Return_3M_%': round(r3m, 2),
-                'Return_6M_%': round(r6m, 2)
+                'Return_1M_%': round(r1m, 2) if not pd.isna(r1m) else np.nan,
+                'Return_3M_%': round(r3m, 2) if not pd.isna(r3m) else np.nan,
+                'Return_6M_%': round(r6m, 2) if not pd.isna(r6m) else np.nan
             })
-        except:
+        except IndexError as e:
+            print(f"❌ IndexError for {ticker}: {e}")
+            continue
+        except Exception as e:
+            print(f"❌ Unexpected error for {ticker}: {e}")
             continue
     return pd.DataFrame(returns)
 
@@ -126,13 +176,17 @@ for entry in watchlist:
 
     # Get returns for benchmark + target ticker
     tickers_to_pull = list(set(universe + [ticker]))
+    #print("📥 tickers to pull :", tickers_to_pull)
     df = get_returns(tickers_to_pull)
-
-    print("🔍 DataFrame columns:", df.columns)
-    print("🧪 Sample rows:\n", df.head())
-
+    #print("📥 Raw df before filtering:", df.shape)
+    #print(df.head(10))
+    #print("🔍 DataFrame columns:", df.columns)
+    #print("🧪 Sample rows:\n", df.head())
+    if df.empty:
+        raise ValueError("❌ DataFrame is empty — check data source or filters.")
+    df = df.fillna(0)
     df.columns = df.columns.str.strip().str.lower()
-    print("✅ Normalized columns:", df.columns)
+    #print("✅ Normalized columns:", df.columns)
 
     target_row = df[df['ticker'] == ticker]
     if target_row.empty:
