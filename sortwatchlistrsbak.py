@@ -7,7 +7,6 @@ import time
 from io import StringIO
 import pytz
 import numpy as np
-import math
 
 headers = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
@@ -84,7 +83,7 @@ windows = {
     '6M': now - timedelta(days=126),
 }
 
-# === Step 3: Function to Get Returns ===
+""" # === Step 3: Function to Get Returns ===
 def get_returns(tickers):
     returns = []
     for ticker in tickers:
@@ -99,16 +98,14 @@ def get_returns(tickers):
                 continue
 
             close_today = hist['Close'].iloc[-1]
+            #print("🧪 close_today :\n", close_today)
             # 1M Close
-            #print("🧪 close_today :", close_today)
-            #print(type(close_today))
             close_1m_filtered = hist.loc[hist.index >= windows['1M']]['Close']
             if close_1m_filtered.empty:
                 print(f"⚠️ No 1M data for {ticker}")
                 continue
             close_1m = close_1m_filtered.iloc[0]
-            #print("🧪 close_1m :", close_1m)
-            #print(type(close_1m))
+            #print("🧪 close_1M:", close_1m)
 
             # 3M Close
             close_3m_filtered = hist.loc[hist.index >= windows['3M']]['Close']
@@ -116,34 +113,28 @@ def get_returns(tickers):
                 print(f"⚠️ No 3M data for {ticker}")
                 continue
             close_3m = close_3m_filtered.iloc[0]
-            #print("🧪 close_3m :", close_3m)
-            #print(type(close_3m))
+            #print("🧪 close_3M:", close_3m)
 
             # 6M Close (entire history)
             close_6m_filtered = hist['Close'].iloc[0]
-            if close_6m_filtered is None:
+            if close_6m_filtered.empty:
                 print(f"⚠️ No 6M data for {ticker}")
                 continue
             close_6m = close_6m_filtered
-            #print("🧪 close_6m :", close_6m)
-            #print(type(close_6m))
+            #print("🧪 close_6M:", close_6m)
 
-            if np.isnan(close_today):
+            if pd.isna(close_today):
                 print(f"⚠️ NaN detected in return calc for {ticker} (missing Close today data)")
-                close_today = 0
                 continue 
-            if np.isnan(close_1m):
+            if pd.isna(close_1m):
                 print(f"⚠️ NaN detected in return calc for {ticker} (missing 1M data)")
-                close_1m = 0
                 continue
-            if np.isnan(close_3m):
+            if pd.isna(close_3m):
                 print(f"⚠️ NaN detected in return calc for {ticker} (missing 3M data)")
-                close_3m = 0
                 continue
-            if np.isnan(close_6m):
-                close_6m = 0
+            if pd.isna(close_6m):
                 print(f"⚠️ NaN detected in return calc for {ticker} (missing 6M data)")
-                continue 
+                continue            
             
 
             r1m = (close_today - close_1m) / close_1m * 100
@@ -163,7 +154,69 @@ def get_returns(tickers):
         except Exception as e:
             print(f"❌ Unexpected error for {ticker}: {e}")
             continue
-    return pd.DataFrame(returns)
+    return pd.DataFrame(returns) """
+
+def get_returns_safely(hist: pd.DataFrame, windows: dict, ticker: str) -> dict | None:
+    """
+    Extracts 1M, 3M, and 6M return % from historical price data.
+    Returns None if insufficient data or NaNs found.
+    """
+    try:
+        if hist.empty:
+            print(f"⚠️ No data for {ticker}")
+            return None
+
+        # Ensure datetime index is tz-aware (America/New_York)
+        if hist.index.tz is None:
+            hist.index = hist.index.tz_localize('America/New_York')
+
+        # === Extract most recent close ===
+        close_now = hist['Close'].iloc[-1]
+
+        # === Extract close at each window ===
+        close_1m_filtered = hist.loc[hist.index >= windows['1M']]['Close']
+        close_3m_filtered = hist.loc[hist.index >= windows['3M']]['Close']
+        close_6m_filtered = hist.loc[hist.index >= windows['6M']]['Close']
+
+        # Skip if any window has no data
+        if close_1m_filtered.empty or close_3m_filtered.empty or close_6m_filtered.empty:
+            print(f"⚠️ Skipping {ticker} — not enough historical data.")
+            return None
+
+        close_1m = close_1m_filtered.iloc[0]
+        close_3m = close_3m_filtered.iloc[0]
+        close_6m = close_6m_filtered.iloc[0]
+
+        # Guard against NaNs
+        if any(pd.isna(x) for x in [close_now, close_1m, close_3m, close_6m]):
+            print(f"⚠️ NaN values in {ticker} close prices")
+            return None
+
+        # === Calculate returns ===
+        returns = {
+            'Ticker': ticker,
+            'Price': round(close_now, 2),
+            'Return_1M_%': ((close_now / close_1m) - 1) * 100,
+            'Return_3M_%': ((close_now / close_3m) - 1) * 100,
+            'Return_6M_%': ((close_now / close_6m) - 1) * 100,
+        }
+
+        return returns
+
+    except Exception as e:
+        print(f"❌ Unexpected error for {ticker}: {e}")
+        return None
+    
+def get_returns(tickers):
+    results = []
+    for ticker in tickers:
+        yf_ticker = fix_yahoo_ticker(ticker)
+        hist = yf.download(yf_ticker, period="6mo", interval="1d")
+        returns = get_returns_safely(hist, windows, ticker)
+        if returns is None:
+            continue
+
+    return pd.DataFrame(returns)    
 
 # === Step 4: Build RS Rank for Each Ticker vs Benchmark ===
 watchlist_df = pd.read_csv("ILAN_COMBINED_BENCHMARK.csv", sep=",", engine="python")
@@ -186,6 +239,8 @@ for entry in watchlist:
     # Get returns for benchmark + target ticker
     tickers_to_pull = list(set(universe + [ticker]))
     #print("📥 tickers to pull :", tickers_to_pull)
+    #yf_tickers = [fix_yahoo_ticker(t) for t in tickers_to_pull]
+
     df = get_returns(tickers_to_pull)
     #print("📥 Raw df before filtering:", df.shape)
     #print(df.head(10))
@@ -193,11 +248,11 @@ for entry in watchlist:
     #print("🧪 Sample rows:\n", df.head())
     if df.empty:
         raise ValueError("❌ DataFrame is empty — check data source or filters.")
-    df = df.fillna(0)
-    #df.columns = df.columns.str.strip().str.lower()
-    print("✅ Normalized columns:", df.columns)
+    #df = df.fillna(0)
+    df.columns = df.columns.str.strip().str.lower()
+    #print("✅ Normalized columns:", df.columns)
 
-    target_row = df[df['Ticker'] == ticker]
+    target_row = df[df['ticker'] == ticker]
     if target_row.empty:
         continue
 
@@ -210,7 +265,7 @@ for entry in watchlist:
     df['RS_Score'] = round(df['1M_Rank']*0.2 + df['3M_Rank']*0.3 + df['6M_Rank']*0.5, 2)
 
     # Extract just the target
-    target_rs = df[df['Ticker'] == ticker].iloc[0].to_dict()
+    target_rs = df[df['ticker'] == ticker].iloc[0].to_dict()
     final.append(target_rs)
 
 # === Step 5: Export ===
