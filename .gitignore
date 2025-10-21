@@ -1,3 +1,7 @@
 venv/
+.env.live
+.env.paper
 .env
 __pycache__/
+buyalert.csv
+executed_orders_log.csv
