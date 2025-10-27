@@ -1,7 +1,7 @@
 venv/
-.env.live
-.env.paper
-.env
+.env.*
+*.csv
+decision_summary.json
 __pycache__/
-buyalert.csv
-executed_orders_log.csv
+3bctradeuni.png
+*.txt
